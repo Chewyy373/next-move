@@ -1,0 +1,8 @@
+{
+  "identifier": "next_move",
+  "name": "Next Move",
+  "version": "1.0.0",
+  "author": "you",
+  "description": "Tombol rekomendasi langkah selanjutnya untuk {{user}}. Sekali tap, aksi langsung dikirim.",
+  "permissions": ["generation", "chats"]
+}

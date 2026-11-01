@@ -124,6 +124,29 @@ function parseSuggestions(text: string, max: number): Suggestion[] {
 
 /* ---------- inti ---------- */
 
+// Lumiverse tidak otomatis memakai koneksi chat untuk generate.raw, jadi koneksi dipilih di sini.
+// ADJUST: nama field profil koneksi (active / is_default / id / provider / model) adalah tebakan terdekat.
+async function resolveConnection(userId: string): Promise<any | null> {
+  const api = spindle.connections;
+  if (!api || typeof api.list !== "function") return null;
+  let raw: any = null;
+  const attempts = [() => api.list({ userId }), () => api.list(userId), () => api.list()];
+  for (const attempt of attempts) {
+    try {
+      raw = await attempt();
+      if (raw) break;
+    } catch (e) {
+      console.error("[next-move] connections.list gagal:", e);
+    }
+  }
+  const list: any[] = Array.isArray(raw) ? raw : raw?.data ?? raw?.items ?? raw?.connections ?? [];
+  if (!list.length) return null;
+  const llm = list.filter((c) => !c?.kind || c.kind === "llm");
+  const pool = llm.length ? llm : list;
+  const isActive = (c: any) => c?.active || c?.is_active || c?.isActive || c?.is_default || c?.isDefault || c?.default;
+  return pool.find(isActive) ?? pool[0];
+}
+
 async function suggest(chatId: string, userId: string, opts: any) {
   const count = Math.min(Math.max(Number(opts?.count) || 4, 2), 6);
   const pov = opts?.pov === "third" ? "third" : "first";
@@ -162,15 +185,31 @@ Aturan:
 - Keluarkan HANYA JSON array, tanpa teks lain, dengan format:
 [{"label":"1-2 kata","text":"isi langkah"}]`;
 
-  const res = await spindle.generate.raw({
-    userId,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: `Berikut percakapan terbaru:\n\n${transcript}\n\nBuat ${count} rekomendasi langkah selanjutnya untuk ${userName}.` },
-    ],
-    parameters: { temperature: 0.95, max_tokens: 700 },
-    // ADJUST: jika ingin pakai koneksi/model tertentu, tambahkan connection id di sini.
-  });
+  const conn = await resolveConnection(userId);
+  if (!conn) {
+    throw new Error(
+      `Tidak menemukan koneksi LLM. spindle.connections: [${namesOf(spindle.connections)}] | spindle.generate: [${namesOf(spindle.generate)}]`,
+    );
+  }
+
+  let res: any;
+  try {
+    res = await spindle.generate.raw({
+      userId,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: `Berikut percakapan terbaru:\n\n${transcript}\n\nBuat ${count} rekomendasi langkah selanjutnya untuk ${userName}.` },
+      ],
+      parameters: { temperature: 0.95, max_tokens: 700 },
+      connection_id: conn.id,
+      ...(conn.provider ? { provider: conn.provider } : {}),
+      ...(conn.model ? { model: conn.model } : {}),
+    });
+  } catch (e: any) {
+    const label = conn.name ?? conn.id;
+    console.error("[next-move] generate.raw gagal:", e);
+    throw new Error(`Generate gagal (koneksi: ${label}, provider: ${conn.provider ?? "-"}, model: ${conn.model ?? "-"}): ${e?.message ?? e}`);
+  }
 
   const content: string = typeof res === "string" ? res : res?.content ?? "";
   const items = parseSuggestions(content, count);

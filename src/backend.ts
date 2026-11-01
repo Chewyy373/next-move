@@ -150,6 +150,7 @@ async function resolveConnection(userId: string): Promise<any | null> {
 async function suggest(chatId: string, userId: string, opts: any) {
   const count = Math.min(Math.max(Number(opts?.count) || 4, 2), 6);
   const pov = opts?.pov === "third" ? "third" : "first";
+  const hint = String(opts?.hint ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
 
   const all = await loadMessages(chatId, userId);
   if (!all.length) throw new Error("Belum ada pesan di chat ini.");
@@ -171,11 +172,15 @@ async function suggest(chatId: string, userId: string, opts: any) {
       ? `Tulis dari sudut pandang orang pertama ("aku"/"saya"), seolah ${userName} sendiri yang mengetik.`
       : `Tulis dari sudut pandang orang ketiga memakai nama "${userName}".`;
 
+  const variationRule = hint
+    ? `- ARAHAN DARI PEMAIN: "${hint}". SEMUA opsi harus mengekspresikan arahan ini (nada, emosi, atau jenis tindakan yang diminta). Buat tepat ${count} opsi yang tetap BERBEDA satu sama lain dalam cara mengungkapkannya (misalnya: intensitas, ucapan vs tindakan fisik, terang-terangan vs tertahan).`
+    : `- Buat tepat ${count} opsi yang BERBEDA arah (contoh: hati-hati, berani, bertanya, menyelidiki, santai/humor, emosional).`;
+
   const system = `Kamu adalah asisten yang menyusun REKOMENDASI LANGKAH SELANJUTNYA untuk pemain dalam sebuah roleplay.
 Pemain memerankan ${userName}. Lawan mainnya/narator adalah ${charName}.
 
 Aturan:
-- Buat tepat ${count} opsi yang BERBEDA arah (contoh: hati-hati, berani, bertanya, menyelidiki, santai/humor, emosional).
+${variationRule}
 - Setiap opsi adalah SATU langkah ${userName}, 1-2 kalimat, maksimal 220 karakter.
 - ${povRule}
 - Gunakan gaya yang sama dengan chat: aksi/narasi diapit *tanda bintang*, dialog diapit "tanda kutip".
@@ -198,7 +203,7 @@ Aturan:
       userId,
       messages: [
         { role: "system", content: system },
-        { role: "user", content: `Berikut percakapan terbaru:\n\n${transcript}\n\nBuat ${count} rekomendasi langkah selanjutnya untuk ${userName}.` },
+        { role: "user", content: `Berikut percakapan terbaru:\n\n${transcript}\n\nBuat ${count} rekomendasi langkah selanjutnya untuk ${userName}.${hint ? ` Arahan pemain: "${hint}".` : ""}` },
       ],
       parameters: { temperature: 0.95, max_tokens: 700 },
       connection_id: conn.id,
@@ -219,10 +224,14 @@ Aturan:
 
 /* ---------- IPC & event ---------- */
 
-spindle.onFrontendMessage(async (msg: any, userId: string) => {
-  if (msg?.type !== "suggest" || !msg.chatId) return;
+const queued = new Map<string, { msg: any; userId: string }>();
+
+async function handleSuggest(msg: any, userId: string) {
   const key = `${userId}:${msg.chatId}`;
-  if (inflight.has(key)) return;
+  if (inflight.has(key)) {
+    queued.set(key, { msg, userId }); // permintaan terbaru menggantikan antrean sebelumnya
+    return;
+  }
   inflight.add(key);
   try {
     spindle.sendToFrontend({ type: "loading", chatId: msg.chatId }, userId);
@@ -232,7 +241,17 @@ spindle.onFrontendMessage(async (msg: any, userId: string) => {
     spindle.sendToFrontend({ type: "error", chatId: msg.chatId, message: String(e?.message ?? e) }, userId);
   } finally {
     inflight.delete(key);
+    const next = queued.get(key);
+    if (next) {
+      queued.delete(key);
+      void handleSuggest(next.msg, next.userId);
+    }
   }
+}
+
+spindle.onFrontendMessage(async (msg: any, userId: string) => {
+  if (msg?.type !== "suggest" || !msg.chatId) return;
+  await handleSuggest(msg, userId);
 });
 
 // Setelah balasan AI selesai, beri tahu frontend (frontend yang memutuskan perlu auto-generate atau tidak).

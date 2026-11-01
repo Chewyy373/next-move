@@ -9,8 +9,8 @@ const inflight = new Set<string>();
 
 /* ---------- util ---------- */
 
-function namesOf(o: any): string {
-  if (!o) return "(tidak ada)";
+function namesList(o: any): string[] {
+  if (!o) return [];
   const names = new Set<string>();
   let p = o;
   while (p && p !== Object.prototype) {
@@ -18,19 +18,54 @@ function namesOf(o: any): string {
     p = Object.getPrototypeOf(p);
   }
   names.delete("constructor");
-  return [...names].join(", ") || "(kosong)";
+  return [...names];
+}
+
+function namesOf(o: any): string {
+  if (!o) return "(tidak ada)";
+  return namesList(o).join(", ") || "(kosong)";
+}
+
+function pickText(m: any): string {
+  for (const k of ["content", "mes", "text", "message", "body"]) {
+    const v = m?.[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (Array.isArray(v)) {
+      const t = v.map((x: any) => (typeof x === "string" ? x : x?.text ?? "")).join("").trim();
+      if (t) return t;
+    }
+  }
+  return "";
+}
+
+function toList(raw: any): any[] {
+  const l = Array.isArray(raw) ? raw : raw?.messages ?? raw?.items ?? raw?.data ?? [];
+  return Array.isArray(l) ? l : [];
+}
+
+function describe(raw: any): string {
+  if (Array.isArray(raw)) return `array ${raw.length}`;
+  if (raw && typeof raw === "object") {
+    const l = toList(raw);
+    const k = l[0] ? ` item: ${Object.keys(l[0]).join("/")}` : "";
+    return `object{${Object.keys(raw).join(",")}} data ${l.length}${k}`;
+  }
+  return typeof raw;
 }
 
 async function loadMessages(chatId: string, userId: string): Promise<{ role: string; content: string }[]> {
-  // ADJUST: nama fungsi bisa sedikit beda antar versi Lumiverse.
+  // ADJUST: nama fungsi pembaca pesan dicari otomatis; fungsi yang mengubah data sengaja dilewati.
   const apis: [string, any][] = ([["chat", spindle.chat], ["chats", spindle.chats]] as [string, any][]).filter(([, a]) => a);
-  const fnNames = ["getMessages", "listMessages", "messages", "getChatMessages", "list", "get"];
+  const preferred = ["getMessages", "listMessages", "messages", "getChatMessages", "fetchMessages", "readMessages", "getHistory", "history"];
+  const unsafe = /(create|add|append|insert|update|edit|delete|remove|clear|set|send|save|swipe|import|export|rename|start|stop)/i;
   const notes: string[] = [];
-  let raw: any = null;
 
   for (const [apiName, api] of apis) {
-    for (const fn of fnNames) {
-      if (typeof api[fn] !== "function") continue;
+    const all = namesList(api).filter((n) => typeof api[n] === "function");
+    const found = all.filter((n) => /message|history/i.test(n) && !unsafe.test(n) && !/^on[A-Z]/.test(n));
+    const candidates = [...preferred.filter((n) => all.includes(n)), ...found.filter((n) => !preferred.includes(n))];
+
+    for (const fn of candidates) {
       const attempts = [
         () => api[fn](chatId, { userId }),
         () => api[fn](chatId),
@@ -38,61 +73,24 @@ async function loadMessages(chatId: string, userId: string): Promise<{ role: str
       ];
       for (const attempt of attempts) {
         try {
-          const r = await attempt();
-          if (r) {
-            raw = r;
-            break;
-          }
+          const raw = await attempt();
+          const out = toList(raw)
+            .map((m) => ({ role: m?.role ?? (m?.is_user ? "user" : "assistant"), content: pickText(m) }))
+            .filter((m) => m.content);
+          if (out.length) return out;
+          notes.push(`${apiName}.${fn}: ${describe(raw)}`);
         } catch (e: any) {
-          notes.push(`${apiName}.${fn}: ${e?.message ?? e}`);
+          notes.push(`${apiName}.${fn}: error ${e?.message ?? e}`);
         }
       }
-      if (raw) break;
     }
-    if (raw) break;
   }
 
-  if (!raw) {
-    const msg =
-      `Gagal membaca pesan chat. spindle: [${namesOf(spindle)}] | spindle.chat: [${namesOf(spindle.chat)}] | spindle.chats: [${namesOf(spindle.chats)}]` +
-      (notes.length ? ` | error: ${notes.slice(0, 3).join("; ")}` : "");
-    console.error("[next-move]", msg);
-    throw new Error(msg);
-  }
-
-  const list: any[] = Array.isArray(raw) ? raw : raw?.messages ?? raw?.items ?? raw?.data ?? [];
-
-  const pickText = (m: any): string => {
-    for (const k of ["content", "mes", "text", "message", "body"]) {
-      const v = m?.[k];
-      if (typeof v === "string" && v.trim()) return v.trim();
-      if (Array.isArray(v)) {
-        const t = v.map((x: any) => (typeof x === "string" ? x : x?.text ?? "")).join("").trim();
-        if (t) return t;
-      }
-    }
-    return "";
-  };
-
-  const out = (Array.isArray(list) ? list : [])
-    .map((m) => ({
-      role: m?.role ?? (m?.is_user ? "user" : "assistant"),
-      content: pickText(m),
-    }))
-    .filter((m) => m.content);
-
-  if (!out.length) {
-    const first = Array.isArray(list) && list[0] ? list[0] : null;
-    const detail =
-      `data: ${Array.isArray(list) ? "array panjang " + list.length : typeof list}` +
-      `, total: ${raw?.total ?? "-"}` +
-      (first
-        ? `, kunci pesan pertama: ${Object.keys(first).join(", ")}, tipe content: ${typeof first.content}`
-        : "");
-    console.error("[next-move] pesan kosong:", detail);
-    throw new Error(`Pesan terbaca tapi kosong. ${detail}`);
-  }
-  return out;
+  const msg =
+    `Gagal membaca pesan chat. spindle.chat: [${namesOf(spindle.chat)}] | spindle.chats: [${namesOf(spindle.chats)}]` +
+    (notes.length ? ` | percobaan: ${notes.slice(0, 6).join("; ")}` : "");
+  console.error("[next-move]", msg);
+  throw new Error(msg);
 }
 
 async function macro(text: string, chatId: string, userId: string, fallback: string) {

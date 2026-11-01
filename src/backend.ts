@@ -61,17 +61,36 @@ async function loadMessages(chatId: string, userId: string): Promise<{ role: str
   }
 
   const list: any[] = Array.isArray(raw) ? raw : raw?.messages ?? raw?.items ?? raw?.data ?? [];
-  const out = list
+
+  const pickText = (m: any): string => {
+    for (const k of ["content", "mes", "text", "message", "body"]) {
+      const v = m?.[k];
+      if (typeof v === "string" && v.trim()) return v.trim();
+      if (Array.isArray(v)) {
+        const t = v.map((x: any) => (typeof x === "string" ? x : x?.text ?? "")).join("").trim();
+        if (t) return t;
+      }
+    }
+    return "";
+  };
+
+  const out = (Array.isArray(list) ? list : [])
     .map((m) => ({
-      role: m.role ?? (m.is_user ? "user" : "assistant"),
-      content: String(m.content ?? m.mes ?? m.text ?? "").trim(),
+      role: m?.role ?? (m?.is_user ? "user" : "assistant"),
+      content: pickText(m),
     }))
     .filter((m) => m.content);
 
   if (!out.length) {
-    const shape = Array.isArray(raw) ? `array, panjang ${raw.length}` : `object, kunci: ${Object.keys(raw).join(", ")}`;
-    const first = Array.isArray(raw) && raw[0] ? ` | kunci pesan pertama: ${Object.keys(raw[0]).join(", ")}` : "";
-    throw new Error(`Pesan terbaca tapi kosong. Bentuk data: ${shape}${first}`);
+    const first = Array.isArray(list) && list[0] ? list[0] : null;
+    const detail =
+      `data: ${Array.isArray(list) ? "array panjang " + list.length : typeof list}` +
+      `, total: ${raw?.total ?? "-"}` +
+      (first
+        ? `, kunci pesan pertama: ${Object.keys(first).join(", ")}, tipe content: ${typeof first.content}`
+        : "");
+    console.error("[next-move] pesan kosong:", detail);
+    throw new Error(`Pesan terbaca tapi kosong. ${detail}`);
   }
   return out;
 }

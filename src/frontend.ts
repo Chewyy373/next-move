@@ -7,12 +7,12 @@ const ACCENT = "#9d7cf0"; // ungu default Lumiverse; ganti kalau temamu beda
 const KEEP_HINT_AFTER_USE = false; // false: kolom arahan dikosongkan setelah kamu memilih saran; true: arahan tetap dipakai
 
 const STORE_KEY = "next-move:settings";
-const defaults = { count: 4, autoSend: true, autoGenerate: true, pov: "first", collapsed: false };
+const defaults = { count: 4, autoSend: true, autoGenerate: true, pov: "first", collapsed: false, interestOn: true };
 type Settings = typeof defaults;
 
 const CSS = `
 .nm-panel{position:fixed;z-index:50;display:none;flex-direction:column;gap:8px;box-sizing:border-box;
-  max-height:42vh;padding:10px;border-radius:18px;
+  max-height:46vh;overflow-y:auto;overscroll-behavior:contain;padding:10px;border-radius:18px;
   background:color-mix(in srgb, #14111f 88%, transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
   border:1px solid color-mix(in srgb, ${ACCENT} 28%, transparent);
   box-shadow:0 10px 30px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04);
@@ -54,6 +54,28 @@ const CSS = `
 .nm-input:focus{border-color:color-mix(in srgb, ${ACCENT} 60%, transparent)}
 .nm-input::placeholder{color:#e7e2f7;opacity:.4}
 @media (pointer:coarse){.nm-input{font-size:16px}}
+.nm-int{display:flex;flex-direction:column;gap:6px}
+.nm-inthead{display:flex;align-items:center;gap:6px;font-size:12px;color:${ACCENT};font-weight:600;letter-spacing:.03em}
+.nm-sp{flex:1}
+.nm-mini{all:unset;box-sizing:border-box;font-size:11.5px;padding:3px 10px;border-radius:999px;cursor:pointer;color:#cfc6ee;
+  border:1px solid color-mix(in srgb, ${ACCENT} 25%, transparent);-webkit-tap-highlight-color:transparent}
+.nm-mini:hover{background:color-mix(in srgb, ${ACCENT} 16%, transparent)}
+.nm-ch{border-radius:14px;padding:8px 10px;background:color-mix(in srgb, #ffffff 4%, transparent);border:1px solid color-mix(in srgb, ${ACCENT} 18%, transparent)}
+.nm-away{opacity:.62}
+.nm-chtop{all:unset;box-sizing:border-box;display:grid;grid-template-columns:1fr auto auto;align-items:baseline;gap:4px 8px;width:100%;cursor:pointer}
+.nm-chn{font-size:14px;font-weight:600;color:#ece8fb;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nm-chs{font-size:13px;font-variant-numeric:tabular-nums;color:#e7e2f7}
+.nm-chd{font-size:11.5px;min-width:44px;text-align:right;font-variant-numeric:tabular-nums}
+.nm-up{color:#7ddc9b}.nm-dn{color:#f08a8a}
+.nm-bar{position:relative;height:7px;border-radius:99px;background:color-mix(in srgb, #ffffff 8%, transparent);margin-top:7px}
+.nm-fill{height:100%;border-radius:99px;background:linear-gradient(90deg, ${ACCENT}, #f27ab8);transition:width .5s ease}
+.nm-tick{position:absolute;left:80%;top:-3px;width:2px;height:13px;border-radius:2px;background:color-mix(in srgb, #ffffff 35%, transparent)}
+.nm-stage{font-size:11.5px;opacity:.75;margin-top:5px}
+.nm-det{margin-top:8px;display:flex;flex-direction:column;gap:6px;font-size:12.5px;line-height:1.45;color:#ddd7f3}
+.nm-chips{display:flex;flex-wrap:wrap;gap:5px}
+.nm-chip{font-size:11px;padding:2px 8px;border-radius:99px;background:color-mix(in srgb, ${ACCENT} 14%, transparent)}
+.nm-acts{display:flex;gap:6px;flex-wrap:wrap}
+.nm-why{opacity:.85}
 `;
 
 const ICON = {
@@ -61,6 +83,7 @@ const ICON = {
   refresh: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>`,
   bolt: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>`,
   send: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`,
+  heart: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 5.6a5.2 5.2 0 0 0-7.4 0L12 7l-1.4-1.4a5.2 5.2 0 0 0-7.4 7.4L12 21.8l8.8-8.8a5.2 5.2 0 0 0 0-7.4z"/></svg>`,
   down: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`,
 };
 
@@ -80,6 +103,13 @@ export function setup(ctx: any) {
   let status: "idle" | "loading" | "error" | "generating" = "idle";
   let errorMsg = "";
   let lastSig = "";
+  type IView = { name: string; score: number; delta: number; present: boolean; stage: { label: string; desc: string }; reasons: { d: number; t: string }[]; likes: string[]; dislikes: string[]; values: string[] };
+  let view: IView[] = [];
+  let expanded: string | null = null;
+  let intNote = "";
+  let lastIntSig = "";
+  let loadedFor = "";
+  let loadingSince = 0;
 
   /* ---------- DOM ---------- */
   const style = document.createElement("style");
@@ -93,6 +123,7 @@ export function setup(ctx: any) {
     <div class="nm-head">
       <div class="nm-title">${ICON.spark}<span>Langkah selanjutnya</span></div>
       <button class="nm-ibtn" data-a="auto">${ICON.bolt}</button>
+      <button class="nm-ibtn" data-a="heart">${ICON.heart}</button>
       <button class="nm-ibtn" data-a="refresh" title="Buat ulang saran">${ICON.refresh}</button>
       <button class="nm-ibtn" data-a="collapse" title="Sembunyikan">${ICON.down}</button>
     </div>
@@ -100,11 +131,14 @@ export function setup(ctx: any) {
       <input class="nm-input" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Arahkan saran… mis. marah, menggoda, curiga" />
       <button class="nm-ibtn" data-a="go" title="Buat saran sesuai arahan">${ICON.send}</button>
     </div>
+    <div class="nm-int"></div>
     <div class="nm-list"></div>`;
   const input = panel.querySelector(".nm-input") as HTMLInputElement;
   const listEl = panel.querySelector(".nm-list") as HTMLElement;
   const autoBtn = panel.querySelector('[data-a="auto"]') as HTMLElement;
   const refreshBtn = panel.querySelector('[data-a="refresh"]') as HTMLElement;
+  const heartBtn = panel.querySelector('[data-a="heart"]') as HTMLElement;
+  const intEl = panel.querySelector(".nm-int") as HTMLElement;
   const fab = document.createElement("button");
   fab.className = "nm-fab";
   fab.innerHTML = `${ICON.spark}<span>Langkah selanjutnya</span>`;
@@ -182,6 +216,7 @@ export function setup(ctx: any) {
     const chatId = getChatId();
     if (!chatId) return;
     status = "loading";
+    loadingSince = Date.now();
     render();
     ctx.sendToBackend({
       type: "suggest",
@@ -200,6 +235,7 @@ export function setup(ctx: any) {
     autoBtn.classList.toggle("nm-on", settings.autoSend);
     autoBtn.title = settings.autoSend ? "Auto-kirim: aktif" : "Auto-kirim: mati (hanya isi kotak input)";
     refreshBtn.classList.toggle("nm-spin", status === "loading");
+    renderInterest(force);
 
     // Daftar saran hanya dibangun ulang kalau isinya berubah (bukan tiap tick).
     const sig = `${status}|${errorMsg}|${settings.count}|${items.map((i) => i.text).join("¦")}`;
@@ -236,11 +272,116 @@ export function setup(ctx: any) {
     position();
   }
 
+  /* ---------- level minat ---------- */
+  function h(tag: string, cls = "", text = ""): HTMLElement {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.textContent = text;
+    return e;
+  }
+  function act(e: HTMLElement, a: string, n?: string): HTMLElement {
+    e.dataset.a = a;
+    if (n !== undefined) e.dataset.n = n;
+    return e;
+  }
+  function sendInterest(payload: any) {
+    const chatId = getChatId();
+    if (chatId) ctx.sendToBackend({ chatId, ...payload });
+  }
+  function ensureInterestLoaded(force = false) {
+    const c = getChatId();
+    if (!c || !settings.interestOn) return;
+    if (!force && loadedFor === c) return;
+    loadedFor = c;
+    ctx.sendToBackend({ type: "interest-get", chatId: c });
+  }
+  function buildBlock(): string {
+    const lines = view.filter((v) => v.present).map((v) => `- ${v.name}: ${v.score}/100 (${v.stage.label}) — ${v.stage.desc}`);
+    return `[Level minat karakter terhadap pemain (skala 0-100). Ini kecenderungan sikap, bukan perintah; bereaksilah sesuai kepribadian masing-masing dan jangan melompati tahap hubungan.\n${lines.join("\n")}]`;
+  }
+  function copyText(t: string) {
+    const done = (ok: boolean) => {
+      intNote = ok ? "Disalin. Tempel ke Author's Note jika ingin dipakai di prompt." : "Gagal menyalin.";
+      renderInterest(true);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(t).then(() => done(true), () => done(false));
+      return;
+    }
+    // Lumiverse lewat http://192.168.x.x bukan secure context, jadi pakai cara lama.
+    const ta = document.createElement("textarea");
+    ta.value = t;
+    ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {}
+    ta.remove();
+    done(ok);
+  }
+
+  function renderInterest(force = false) {
+    heartBtn.classList.toggle("nm-on", settings.interestOn);
+    heartBtn.title = settings.interestOn ? "Level minat: aktif" : "Level minat: mati";
+    intEl.style.display = settings.interestOn ? "" : "none";
+    if (!settings.interestOn) return;
+    const sig = JSON.stringify([view, expanded, intNote]);
+    if (!force && sig === lastIntSig) return;
+    lastIntSig = sig;
+    intEl.innerHTML = "";
+
+    const head = h("div", "nm-inthead");
+    head.append(h("span", "", "♡ Level minat"), h("span", "nm-sp"));
+    if (view.length) {
+      head.append(act(h("button", "nm-mini", "Salin"), "i-copy"), act(h("button", "nm-mini", "Reset"), "i-reset"));
+    } else {
+      head.append(act(h("button", "nm-mini", "Nilai sekarang"), "i-eval"));
+    }
+    intEl.appendChild(head);
+    if (intNote) intEl.appendChild(h("div", "nm-msg", intNote));
+    if (!view.length && !intNote) intEl.appendChild(h("div", "nm-msg", "Belum ada data. Level minat dinilai otomatis setelah balasan berikutnya."));
+
+    for (const v of view) {
+      const row = h("div", "nm-ch" + (v.present ? "" : " nm-away"));
+      const top = act(h("button", "nm-chtop"), "i-open", v.name);
+      const d = h("span", "nm-chd" + (v.delta > 0 ? " nm-up" : v.delta < 0 ? " nm-dn" : ""), v.delta > 0 ? `▲ +${v.delta}` : v.delta < 0 ? `▼ ${v.delta}` : "");
+      top.append(h("span", "nm-chn", v.name), h("span", "nm-chs", `${v.score}/100`), d);
+      const bar = h("div", "nm-bar");
+      const fill = h("div", "nm-fill");
+      fill.style.width = `${v.score}%`;
+      bar.append(fill, h("div", "nm-tick"));
+      row.append(top, bar, h("div", "nm-stage", v.stage.label + (v.present ? "" : " · tidak di tempat")));
+
+      if (expanded === v.name) {
+        const det = h("div", "nm-det");
+        det.appendChild(h("div", "", v.stage.desc));
+        v.reasons.forEach((r) => det.appendChild(h("div", "nm-why", `${r.d > 0 ? "+" : ""}${r.d}  ${r.t}`)));
+        const chips = h("div", "nm-chips");
+        v.likes.forEach((x) => chips.appendChild(h("span", "nm-chip", `♥ ${x}`)));
+        v.dislikes.forEach((x) => chips.appendChild(h("span", "nm-chip", `✕ ${x}`)));
+        v.values.forEach((x) => chips.appendChild(h("span", "nm-chip", `◆ ${x}`)));
+        if (chips.childNodes.length) det.appendChild(chips);
+        const acts = h("div", "nm-acts");
+        acts.append(
+          act(h("button", "nm-mini", "−5"), "i-minus", v.name),
+          act(h("button", "nm-mini", "+5"), "i-plus", v.name),
+          act(h("button", "nm-mini", "Hapus"), "i-del", v.name),
+        );
+        det.appendChild(acts);
+        row.appendChild(det);
+      }
+      intEl.appendChild(row);
+    }
+  }
+
   /* ---------- aksi tombol & kolom arahan ---------- */
   panel.addEventListener("click", (e) => {
     const el = (e.target as HTMLElement).closest("[data-a]") as HTMLElement | null;
     if (!el) return;
     const a = el.dataset.a;
+    const n = el.dataset.n || "";
     if (a === "auto") {
       settings.autoSend = !settings.autoSend;
       save();
@@ -251,6 +392,25 @@ export function setup(ctx: any) {
       render(true);
     } else if (a === "refresh" || a === "go") {
       request();
+    } else if (a === "heart") {
+      settings.interestOn = !settings.interestOn;
+      save();
+      if (settings.interestOn) ensureInterestLoaded(true);
+      render(true);
+    } else if (a === "i-open") {
+      expanded = expanded === n ? null : n;
+      renderInterest(true);
+    } else if (a === "i-plus" || a === "i-minus") {
+      sendInterest({ type: "interest-set", name: n, delta: a === "i-plus" ? 5 : -5 });
+    } else if (a === "i-del") {
+      sendInterest({ type: "interest-remove", name: n });
+    } else if (a === "i-reset") {
+      if (confirm("Reset semua level minat di chat ini?")) sendInterest({ type: "interest-reset" });
+    } else if (a === "i-copy") {
+      copyText(buildBlock());
+    } else if (a === "i-eval") {
+      intNote = "";
+      sendInterest({ type: "interest-eval", force: true });
     }
   });
   // Ketikan di kolom arahan tidak boleh bocor ke shortcut keyboard milik Lumiverse.
@@ -282,13 +442,42 @@ export function setup(ctx: any) {
     const chatId = getChatId();
     if (msg.chatId && chatId && msg.chatId !== chatId) return;
 
+    if (msg.type === "interest") {
+      view = msg.items || [];
+      intNote = "";
+      if (expanded && !view.some((v) => v.name === expanded)) expanded = null;
+      if (msg.source === "eval") {
+        status = "idle";
+        if (settings.autoGenerate) request();
+        else render(true);
+      } else {
+        renderInterest(true);
+      }
+      return;
+    }
+    if (msg.type === "interest-error") {
+      intNote = `Gagal menilai minat: ${String(msg.message || "").slice(0, 160)}`;
+      if (msg.source === "eval") {
+        status = "idle";
+        if (settings.autoGenerate) request();
+        else render(true);
+      } else {
+        renderInterest(true);
+      }
+      return;
+    }
     if (msg.type === "generation-started") {
       status = "generating";
       items = [];
       render();
     } else if (msg.type === "generation-ended") {
       status = "idle";
-      if (settings.autoGenerate) request();
+      if (settings.interestOn) {
+        status = "loading";
+        loadingSince = Date.now();
+        render();
+        sendInterest({ type: "interest-eval" }); // saran dibuat setelah penilaian selesai
+      } else if (settings.autoGenerate) request();
       else render();
     } else if (msg.type === "loading") {
       status = "loading";
@@ -312,7 +501,12 @@ export function setup(ctx: any) {
       lastUrl = location.href;
       items = [];
       status = "idle";
+      view = [];
+      expanded = null;
+      intNote = "";
     }
+    if (status === "loading" && Date.now() - loadingSince > 90000) status = "idle"; // jaga-jaga kalau balasan backend hilang
+    ensureInterestLoaded();
     render();
   };
   const timer = window.setInterval(tick, 700);

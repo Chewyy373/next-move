@@ -1,6 +1,8 @@
 // Next Move — backend (berjalan di worker Bun milik Lumiverse)
 // Tugas: saat diminta frontend, ambil konteks chat -> minta LLM -> kirim balik daftar saran.
 
+import { createInterest } from "./interest";
+
 declare const spindle: any;
 
 type Suggestion = { label: string; text: string };
@@ -176,6 +178,11 @@ async function suggest(chatId: string, userId: string, opts: any) {
     ? `- ARAHAN DARI PEMAIN: "${hint}". SEMUA opsi harus mengekspresikan arahan ini (nada, emosi, atau jenis tindakan yang diminta). Buat tepat ${count} opsi yang tetap BERBEDA satu sama lain dalam cara mengungkapkannya (misalnya: intensitas, ucapan vs tindakan fisik, terang-terangan vs tertahan).`
     : `- Buat tepat ${count} opsi yang BERBEDA arah (contoh: hati-hati, berani, bertanya, menyelidiki, santai/humor, emosional).`;
 
+  const rel = await interest.summaryFor(chatId, userId).catch(() => "");
+  const relRule = rel
+    ? `- Kondisi hubungan saat ini (level minat 0-100): ${rel}. Saran harus masuk akal untuk tahap itu (jangan melompat, mis. ajakan romantis saat masih orang asing), tetapi satu opsi boleh mencoba mendekat selangkah.\n`
+    : "";
+
   const system = `Kamu adalah asisten yang menyusun REKOMENDASI LANGKAH SELANJUTNYA untuk pemain dalam sebuah roleplay.
 Pemain memerankan ${userName}. Lawan mainnya/narator adalah ${charName}.
 
@@ -187,7 +194,7 @@ ${variationRule}
 - Pakai bahasa yang sama dengan percakapan terakhir.
 - JANGAN menulis reaksi atau ucapan ${charName}, dan jangan melompati waktu. Cukup langkah ${userName} saja.
 - Konsisten dengan kepribadian, situasi, dan fakta yang sudah ada di chat.
-- Keluarkan HANYA JSON array, tanpa teks lain, dengan format:
+${relRule}- Keluarkan HANYA JSON array, tanpa teks lain, dengan format:
 [{"label":"1-2 kata","text":"isi langkah"}]`;
 
   const conn = await resolveConnection(userId);
@@ -222,6 +229,59 @@ ${variationRule}
   return items;
 }
 
+async function callLLM(userId: string, messages: any[], parameters: any): Promise<string> {
+  const conn = await resolveConnection(userId);
+  if (!conn) throw new Error("Tidak menemukan koneksi LLM.");
+  const res = await spindle.generate.raw({
+    userId,
+    messages,
+    parameters,
+    connection_id: conn.id,
+    ...(conn.provider ? { provider: conn.provider } : {}),
+    ...(conn.model ? { model: conn.model } : {}),
+  });
+  return typeof res === "string" ? res : res?.content ?? "";
+}
+
+const interest = createInterest({ llm: callLLM, macro });
+const evalInflight = new Set<string>();
+
+async function handleInterest(msg: any, userId: string) {
+  const chatId: string = msg.chatId;
+  const send = (p: any) => spindle.sendToFrontend({ chatId, ...p }, userId);
+  const isEval = msg.type === "interest-eval";
+  const key = `${userId}:${chatId}`;
+  if (isEval) {
+    if (evalInflight.has(key)) return;
+    evalInflight.add(key);
+  }
+  try {
+    let items: any[] = [];
+    if (msg.type === "interest-get") {
+      items = await interest.get(chatId, userId);
+    } else if (isEval) {
+      const all = await loadMessages(chatId, userId);
+      const userName = await macro("{{user}}", chatId, userId, "User");
+      const charName = await macro("{{char}}", chatId, userId, "Karakter");
+      items = await interest.evaluate(chatId, userId, all, userName, charName, !!msg.force);
+    } else if (msg.type === "interest-set") {
+      items = await interest.adjust(chatId, userId, String(msg.name ?? ""), Math.max(-20, Math.min(20, Number(msg.delta) || 0)));
+    } else if (msg.type === "interest-remove") {
+      items = await interest.remove(chatId, userId, String(msg.name ?? ""));
+    } else if (msg.type === "interest-reset") {
+      items = await interest.reset(chatId, userId);
+    } else {
+      return;
+    }
+    send({ type: "interest", source: isEval ? "eval" : "other", items });
+  } catch (e: any) {
+    console.error("[next-move] interest gagal:", e);
+    send({ type: "interest-error", source: isEval ? "eval" : "other", message: String(e?.message ?? e) });
+  } finally {
+    if (isEval) evalInflight.delete(key);
+  }
+}
+
 /* ---------- IPC & event ---------- */
 
 const queued = new Map<string, { msg: any; userId: string }>();
@@ -250,8 +310,9 @@ async function handleSuggest(msg: any, userId: string) {
 }
 
 spindle.onFrontendMessage(async (msg: any, userId: string) => {
-  if (msg?.type !== "suggest" || !msg.chatId) return;
-  await handleSuggest(msg, userId);
+  if (!msg?.chatId || typeof msg.type !== "string") return;
+  if (msg.type === "suggest") return handleSuggest(msg, userId);
+  if (msg.type.startsWith("interest-")) return handleInterest(msg, userId);
 });
 
 // Setelah balasan AI selesai, beri tahu frontend (frontend yang memutuskan perlu auto-generate atau tidak).

@@ -4,6 +4,7 @@
 /* ===== Pengaturan yang mungkin perlu kamu sesuaikan ===== */
 const SEND_BUTTON_SELECTOR = ""; // isi mis. 'button[aria-label="Send"]' jika auto-kirim salah tombol
 const ACCENT = "#9d7cf0"; // ungu default Lumiverse; ganti kalau temamu beda
+const KEEP_HINT_AFTER_USE = false; // false: kolom arahan dikosongkan setelah kamu memilih saran; true: arahan tetap dipakai
 
 const STORE_KEY = "next-move:settings";
 const defaults = { count: 4, autoSend: true, autoGenerate: true, pov: "first", collapsed: false };
@@ -46,12 +47,20 @@ const CSS = `
   background:color-mix(in srgb, #14111f 88%, transparent);backdrop-filter:blur(12px);border:1px solid color-mix(in srgb, ${ACCENT} 35%, transparent)}
 .nm-fab.nm-show{display:inline-flex}
 .nm-fab svg{width:15px;height:15px}
+.nm-ask{display:flex;align-items:center;gap:6px}
+.nm-input{flex:1;min-width:0;box-sizing:border-box;height:34px;padding:0 12px;border-radius:12px;
+  background:color-mix(in srgb, #ffffff 5%, transparent);border:1px solid color-mix(in srgb, ${ACCENT} 25%, transparent);
+  color:#e7e2f7;font:inherit;font-size:14px;outline:none;transition:border-color .15s}
+.nm-input:focus{border-color:color-mix(in srgb, ${ACCENT} 60%, transparent)}
+.nm-input::placeholder{color:#e7e2f7;opacity:.4}
+@media (pointer:coarse){.nm-input{font-size:16px}}
 `;
 
 const ICON = {
   spark: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 3v4M17 5h4M5 17v4M3 19h4"/></svg>`,
   refresh: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>`,
   bolt: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>`,
+  send: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`,
   down: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`,
 };
 
@@ -70,6 +79,7 @@ export function setup(ctx: any) {
   let items: { label: string; text: string }[] = [];
   let status: "idle" | "loading" | "error" | "generating" = "idle";
   let errorMsg = "";
+  let lastSig = "";
 
   /* ---------- DOM ---------- */
   const style = document.createElement("style");
@@ -78,6 +88,23 @@ export function setup(ctx: any) {
 
   const panel = document.createElement("div");
   panel.className = "nm-panel";
+  // Kerangka panel dibuat SEKALI supaya teks di kolom arahan tidak hilang saat panel diperbarui.
+  panel.innerHTML = `
+    <div class="nm-head">
+      <div class="nm-title">${ICON.spark}<span>Langkah selanjutnya</span></div>
+      <button class="nm-ibtn" data-a="auto">${ICON.bolt}</button>
+      <button class="nm-ibtn" data-a="refresh" title="Buat ulang saran">${ICON.refresh}</button>
+      <button class="nm-ibtn" data-a="collapse" title="Sembunyikan">${ICON.down}</button>
+    </div>
+    <div class="nm-ask">
+      <input class="nm-input" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Arahkan saran… mis. marah, menggoda, curiga" />
+      <button class="nm-ibtn" data-a="go" title="Buat saran sesuai arahan">${ICON.send}</button>
+    </div>
+    <div class="nm-list"></div>`;
+  const input = panel.querySelector(".nm-input") as HTMLInputElement;
+  const listEl = panel.querySelector(".nm-list") as HTMLElement;
+  const autoBtn = panel.querySelector('[data-a="auto"]') as HTMLElement;
+  const refreshBtn = panel.querySelector('[data-a="refresh"]') as HTMLElement;
   const fab = document.createElement("button");
   fab.className = "nm-fab";
   fab.innerHTML = `${ICON.spark}<span>Langkah selanjutnya</span>`;
@@ -140,6 +167,7 @@ export function setup(ctx: any) {
     const box = findInputBox(ta);
     setNativeValue(ta, text);
     ta.focus();
+    if (!KEEP_HINT_AFTER_USE) input.value = "";
     if (settings.autoSend) {
       setTimeout(() => {
         clickSend(box, ta);
@@ -158,65 +186,83 @@ export function setup(ctx: any) {
     ctx.sendToBackend({
       type: "suggest",
       chatId,
-      options: { count: settings.count, pov: settings.pov },
+      options: { count: settings.count, pov: settings.pov, hint: input.value.trim() },
     });
   }
 
   /* ---------- render ---------- */
-  function render() {
+  function render(force = false) {
     const hasChat = !!getChatId() && !!findTextarea();
     fab.classList.toggle("nm-show", hasChat && settings.collapsed);
     panel.classList.toggle("nm-show", hasChat && !settings.collapsed);
     if (!hasChat || settings.collapsed) return;
 
-    const spin = status === "loading" ? " nm-spin" : "";
-    panel.innerHTML = `
-      <div class="nm-head">
-        <div class="nm-title">${ICON.spark}<span>Langkah selanjutnya</span></div>
-        <button class="nm-ibtn ${settings.autoSend ? "nm-on" : ""}" data-a="auto" title="${settings.autoSend ? "Auto-kirim: aktif" : "Auto-kirim: mati (hanya isi kotak input)"}">${ICON.bolt}</button>
-        <button class="nm-ibtn${spin}" data-a="refresh" title="Buat ulang saran">${ICON.refresh}</button>
-        <button class="nm-ibtn" data-a="collapse" title="Sembunyikan">${ICON.down}</button>
-      </div>
-      <div class="nm-list"></div>`;
+    autoBtn.classList.toggle("nm-on", settings.autoSend);
+    autoBtn.title = settings.autoSend ? "Auto-kirim: aktif" : "Auto-kirim: mati (hanya isi kotak input)";
+    refreshBtn.classList.toggle("nm-spin", status === "loading");
 
-    const list = panel.querySelector(".nm-list") as HTMLElement;
-    if (status === "loading") {
-      for (let i = 0; i < Math.min(settings.count, 4); i++) list.insertAdjacentHTML("beforeend", `<div class="nm-skel"></div>`);
-    } else if (status === "generating") {
-      list.innerHTML = `<div class="nm-msg">Menunggu balasan… saran baru akan muncul otomatis.</div>`;
-    } else if (status === "error") {
-      list.innerHTML = `<div class="nm-msg"></div>`;
-      (list.firstChild as HTMLElement).textContent = errorMsg || "Gagal membuat saran.";
-    } else if (!items.length) {
-      list.innerHTML = `<div class="nm-msg">Tekan ↻ untuk membuat saran.</div>`;
-    } else {
-      items.forEach((it) => {
-        const b = document.createElement("button");
-        b.className = "nm-card";
-        const tag = document.createElement("span");
-        tag.className = "nm-tag";
-        tag.textContent = it.label;
-        const txt = document.createElement("span");
-        txt.className = "nm-text";
-        txt.textContent = it.text;
-        b.append(tag, txt);
-        b.onclick = () => useSuggestion(it.text);
-        list.appendChild(b);
-      });
+    // Daftar saran hanya dibangun ulang kalau isinya berubah (bukan tiap tick).
+    const sig = `${status}|${errorMsg}|${settings.count}|${items.map((i) => i.text).join("¦")}`;
+    if (force || sig !== lastSig) {
+      lastSig = sig;
+      listEl.innerHTML = "";
+      if (status === "loading") {
+        for (let i = 0; i < Math.min(settings.count, 4); i++) listEl.insertAdjacentHTML("beforeend", `<div class="nm-skel"></div>`);
+      } else if (status === "generating") {
+        listEl.innerHTML = `<div class="nm-msg">Menunggu balasan… saran baru akan muncul otomatis.</div>`;
+      } else if (status === "error") {
+        const m = document.createElement("div");
+        m.className = "nm-msg";
+        m.textContent = errorMsg || "Gagal membuat saran.";
+        listEl.appendChild(m);
+      } else if (!items.length) {
+        listEl.innerHTML = `<div class="nm-msg">Ketik arahan lalu Enter, atau tekan ↻ untuk saran bebas.</div>`;
+      } else {
+        items.forEach((it) => {
+          const b = document.createElement("button");
+          b.className = "nm-card";
+          const tag = document.createElement("span");
+          tag.className = "nm-tag";
+          tag.textContent = it.label;
+          const txt = document.createElement("span");
+          txt.className = "nm-text";
+          txt.textContent = it.text;
+          b.append(tag, txt);
+          b.onclick = () => useSuggestion(it.text);
+          listEl.appendChild(b);
+        });
+      }
     }
-
-    panel.querySelectorAll<HTMLElement>("[data-a]").forEach((el) => {
-      el.onclick = () => {
-        const a = el.dataset.a;
-        if (a === "auto") settings.autoSend = !settings.autoSend;
-        if (a === "collapse") settings.collapsed = true;
-        if (a === "refresh") return request();
-        save();
-        render();
-      };
-    });
     position();
   }
+
+  /* ---------- aksi tombol & kolom arahan ---------- */
+  panel.addEventListener("click", (e) => {
+    const el = (e.target as HTMLElement).closest("[data-a]") as HTMLElement | null;
+    if (!el) return;
+    const a = el.dataset.a;
+    if (a === "auto") {
+      settings.autoSend = !settings.autoSend;
+      save();
+      render(true);
+    } else if (a === "collapse") {
+      settings.collapsed = true;
+      save();
+      render(true);
+    } else if (a === "refresh" || a === "go") {
+      request();
+    }
+  });
+  // Ketikan di kolom arahan tidak boleh bocor ke shortcut keyboard milik Lumiverse.
+  input.addEventListener("keydown", (e: KeyboardEvent) => {
+    e.stopPropagation();
+    if (e.key === "Enter" && !e.isComposing) {
+      e.preventDefault();
+      request();
+    }
+  });
+  input.addEventListener("keyup", (e) => e.stopPropagation());
+  input.addEventListener("keypress", (e) => e.stopPropagation());
 
   function position() {
     const ta = findTextarea();

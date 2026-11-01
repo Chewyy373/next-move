@@ -9,30 +9,71 @@ const inflight = new Set<string>();
 
 /* ---------- util ---------- */
 
+function namesOf(o: any): string {
+  if (!o) return "(tidak ada)";
+  const names = new Set<string>();
+  let p = o;
+  while (p && p !== Object.prototype) {
+    Object.getOwnPropertyNames(p).forEach((k) => names.add(k));
+    p = Object.getPrototypeOf(p);
+  }
+  names.delete("constructor");
+  return [...names].join(", ") || "(kosong)";
+}
+
 async function loadMessages(chatId: string, userId: string): Promise<{ role: string; content: string }[]> {
   // ADJUST: nama fungsi bisa sedikit beda antar versi Lumiverse.
-  const apis = [spindle.chat, spindle.chats].filter(Boolean);
+  const apis: [string, any][] = ([["chat", spindle.chat], ["chats", spindle.chats]] as [string, any][]).filter(([, a]) => a);
+  const fnNames = ["getMessages", "listMessages", "messages", "getChatMessages", "list", "get"];
+  const notes: string[] = [];
   let raw: any = null;
-  for (const api of apis) {
-    for (const fn of ["getMessages", "listMessages", "messages"]) {
-      if (typeof api[fn] === "function") {
+
+  for (const [apiName, api] of apis) {
+    for (const fn of fnNames) {
+      if (typeof api[fn] !== "function") continue;
+      const attempts = [
+        () => api[fn](chatId, { userId }),
+        () => api[fn](chatId),
+        () => api[fn]({ chatId, userId }),
+      ];
+      for (const attempt of attempts) {
         try {
-          raw = await api[fn](chatId, { userId });
-          if (raw) break;
-        } catch {
-          /* coba kandidat berikutnya */
+          const r = await attempt();
+          if (r) {
+            raw = r;
+            break;
+          }
+        } catch (e: any) {
+          notes.push(`${apiName}.${fn}: ${e?.message ?? e}`);
         }
       }
+      if (raw) break;
     }
     if (raw) break;
   }
-  const list: any[] = Array.isArray(raw) ? raw : raw?.messages ?? [];
-  return list
+
+  if (!raw) {
+    const msg =
+      `Gagal membaca pesan chat. spindle: [${namesOf(spindle)}] | spindle.chat: [${namesOf(spindle.chat)}] | spindle.chats: [${namesOf(spindle.chats)}]` +
+      (notes.length ? ` | error: ${notes.slice(0, 3).join("; ")}` : "");
+    console.error("[next-move]", msg);
+    throw new Error(msg);
+  }
+
+  const list: any[] = Array.isArray(raw) ? raw : raw?.messages ?? raw?.items ?? raw?.data ?? [];
+  const out = list
     .map((m) => ({
       role: m.role ?? (m.is_user ? "user" : "assistant"),
-      content: String(m.content ?? m.mes ?? "").trim(),
+      content: String(m.content ?? m.mes ?? m.text ?? "").trim(),
     }))
     .filter((m) => m.content);
+
+  if (!out.length) {
+    const shape = Array.isArray(raw) ? `array, panjang ${raw.length}` : `object, kunci: ${Object.keys(raw).join(", ")}`;
+    const first = Array.isArray(raw) && raw[0] ? ` | kunci pesan pertama: ${Object.keys(raw[0]).join(", ")}` : "";
+    throw new Error(`Pesan terbaca tapi kosong. Bentuk data: ${shape}${first}`);
+  }
+  return out;
 }
 
 async function macro(text: string, chatId: string, userId: string, fallback: string) {
